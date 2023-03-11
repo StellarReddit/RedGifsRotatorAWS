@@ -4,25 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/StellarReddit/RedGifsWrapper"
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/secretsmanager"
 	"github.com/google/uuid"
-	"time"
 )
 
 // These variables are injected at compile time
 var (
-	RedGifsClientId     string
+	RedGifsClientID     string
 	RedGifsClientSecret string
-	RedGifsTestId       string
+	RedGifsTestID       string
 )
 
-const (
-	ServerUserAgent = "app.stellarreddit.RedGifsServer (email: legal@azimuthcore.com)"
-)
+const serverUserAgent = "app.stellarreddit.RedGifsServer (email: legal@azimuthcore.com)"
 
 func main() {
 	lambda.Start(CredentialRotator)
@@ -32,33 +31,33 @@ func main() {
 func CredentialRotator(_ context.Context) {
 	// Create the RedGifs client
 	redGifsClient := RedGifsWrapper.NewClient(RedGifsWrapper.Config{
-		ClientID:     RedGifsClientId,
+		ClientID:     RedGifsClientID,
 		ClientSecret: RedGifsClientSecret,
-		UserAgent:    ServerUserAgent,
+		UserAgent:    serverUserAgent,
 	})
 
-	backoff := [3]time.Duration{3, 5, 10}
+	backoff := []time.Duration{3 * time.Second, 5 * time.Second, 10 * time.Second}
 
 	for _, v := range backoff {
 		accessToken, refreshErr := redGifsClient.RequestNewAccessToken()
 
 		if refreshErr != nil {
-			time.Sleep(v * time.Second)
+			time.Sleep(v)
 			continue
 		}
 
 		time.Sleep(3 * time.Second) // Wait 3 seconds for token to be active
 
-		_, streamErr := redGifsClient.LookupStreamURL("", ServerUserAgent, RedGifsTestId, accessToken)
+		_, streamErr := redGifsClient.LookupStreamURL("", serverUserAgent, RedGifsTestID, accessToken)
 
 		// Success if no error, or if streamErr that is 404/410.
 		if streamErr == nil || errors.Is(streamErr, RedGifsWrapper.ErrNotFound) {
 			rotateAWSSecret(accessToken)
 			break
-		} else {
-			// Otherwise, try up to 2 more times
-			time.Sleep(v * time.Second)
 		}
+
+		// Otherwise, try up to 2 more times
+		time.Sleep(v)
 	}
 }
 
@@ -66,15 +65,17 @@ func CredentialRotator(_ context.Context) {
 func rotateAWSSecret(newAccessToken string) {
 	sess := session.Must(session.NewSession())
 	client := secretsmanager.New(sess)
-	secretId := aws.String("s4r-redgifs-accesstoken")
+	secretID := aws.String("s4r-redgifs-accesstoken")
 
 	// Store the secret
-	_, err := client.PutSecretValue(&secretsmanager.PutSecretValueInput{
+	_, err := client.PutSecretValueWithContext(context.Background(), &secretsmanager.PutSecretValueInput{
 		ClientRequestToken: aws.String(uuid.NewString()),
-		SecretId:           secretId,
+		SecretId:           secretID,
 		SecretString:       aws.String(newAccessToken),
 	})
 
 	// Do nothing if error, token will be valid for 2 more weeks anyway
-	fmt.Println(err)
+	if err != nil {
+		fmt.Println(err)
+	}
 }
